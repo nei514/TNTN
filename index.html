@@ -10,7 +10,6 @@ body {
   background: #000;
   font-family: sans-serif;
 }
-
 #ui {
   position: absolute;
   inset: 0;
@@ -22,22 +21,13 @@ body {
   pointer-events: none;
   z-index: 10;
 }
-
 #result {
   position: absolute;
   top: 20px;
   text-align: center;
 }
-
-#result .dice {
-  font-size: 64px;
-}
-
-#result .judge {
-  font-size: 32px;
-  font-weight: bold;
-}
-
+#result .dice { font-size: 64px; }
+#result .judge { font-size: 32px; font-weight: bold; }
 #rollBtn {
   pointer-events: auto;
   font-size: 22px;
@@ -46,58 +36,13 @@ body {
   border: none;
   cursor: pointer;
 }
-#rollBtn.hidden {
-  display: none;
-}
-
-/* ===== ニコニコ風コメント ===== */
+#rollBtn.hidden { display: none; }
 #comment-layer {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  overflow: hidden;
+  overflow: visible; /* hidden から visible に変更 */
   z-index: 20;
-}
-
-.comment {
-  position: absolute;
-  white-space: nowrap;
-  font-size: 36px;
-  font-weight: bold;
-  color: #fff;
-  text-shadow: 2px 2px 4px #000;
-  animation: flow 6s linear forwards;
-}
-
-@keyframes flow {
-  from { transform: translateX(100vw); }
-  to   { transform: translateX(-120%); }
-}
-/* ===== ヒフミ演出 ===== */
-#unchi {
-  position: fixed;
-  left: 50%;
-  top: 0;
-  transform: translateX(-50%);
-  height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 30;
-  font-size: 64px;
-  font-weight: 900;
-  color: red;
-  text-shadow: 3px 3px 6px #000;
-  opacity: 0;
-  animation: unchiShow 3s ease forwards;
-}
-
-@keyframes unchiShow {
-  0%   { opacity: 0; transform: translateX(-50%) scale(0.8); }
-  20%  { opacity: 1; transform: translateX(-50%) scale(1); }
-  80%  { opacity: 1; }
-  100% { opacity: 0; transform: translateX(-50%) scale(1.2); }
 }
 
 </style>
@@ -108,11 +53,8 @@ body {
   <div id="result">振ってください</div>
   <button id="rollBtn">振る</button>
 </div>
-
 <div id="comment-layer"></div>
 <div id="unchi"></div>
-
-
 <script type="module">
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js";
 import * as CANNON from "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js";
@@ -120,18 +62,42 @@ import * as CANNON from "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cann
 let scene, camera, renderer, world;
 let dice = [];
 let isRolling = false;
+let CHEAT_MODE = null;
+let CHEAT_VALUES = null; // hancho 用の出目保持
+window.cheat = function(mode) {
+  if (mode === "one_only") {
+    CHEAT_MODE = "one_only";
+    CHEAT_VALUES = null;
+    console.log("🔥 CHEAT ENABLED: ONE ONLY (全て1)");
+  } else if (mode === "hancho") {
+    CHEAT_MODE = "hancho";
+    CHEAT_VALUES = [4,5,6];
+    console.log("🔥 CHEAT ENABLED: HANCHO (4,5,6が上)");
+  } else {
+    CHEAT_MODE = null;
+    CHEAT_VALUES = null;
+    console.log("🧹 CHEAT DISABLED");
+  }
+};
+
+
 const BOWL_RADIUS = 4.8;
+const WALL_COUNT = 64;
+const WALL_THICK = 0.2; 
+const DICE_SIZE = 1; // 1 = 標準。好きなサイズに変更可能
+
+/* 🔴 壁をめっちゃ高くする */
+const WALL_HEIGHT = 20;   // ← ここ重要
 
 init();
 animate();
 
-/* ---------- 初期化 ---------- */
 function init() {
   scene = new THREE.Scene();
 
   camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
-  camera.position.set(0, 10, 14);
-  camera.lookAt(0, 0, 0);
+  camera.position.set(0, 12, 16);
+  camera.lookAt(0, 3, 0);
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(innerWidth, innerHeight);
@@ -139,11 +105,14 @@ function init() {
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.6));
   const light = new THREE.DirectionalLight(0xffffff, 0.8);
-  light.position.set(5, 10, 5);
+  light.position.set(5, 15, 5);
   scene.add(light);
 
-  world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+  world = new CANNON.World({
+    gravity: new CANNON.Vec3(0, -9.82, 0)
+  });
 
+  /* 床 */
   const floorBody = new CANNON.Body({
     type: CANNON.Body.STATIC,
     shape: new CANNON.Plane()
@@ -152,63 +121,50 @@ function init() {
   world.addBody(floorBody);
 
   const floor = new THREE.Mesh(
-    new THREE.CircleGeometry(6, 32),
+    new THREE.CircleGeometry(BOWL_RADIUS + 0.5, 64),
     new THREE.MeshStandardMaterial({ color: 0x333333 })
   );
   floor.rotation.x = -Math.PI / 2;
   scene.add(floor);
 
-  for (let i = 0; i < 32; i++) {
-    const a = (i / 32) * Math.PI * 2;
-    const wall = new CANNON.Body({
+  /* 見た目の皿 */
+  const bowl = new THREE.Mesh(
+    new THREE.SphereGeometry(BOWL_RADIUS, 64, 32, 0, Math.PI * 2, 0, Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: 0x555555, side: THREE.DoubleSide })
+  );
+  bowl.rotateX(Math.PI);
+  scene.add(bowl);
+
+  /* 🔴 見えない超高い壁 */
+  const wallWidth = (2 * Math.PI * BOWL_RADIUS) / WALL_COUNT;
+
+  for (let i = 0; i < WALL_COUNT; i++) {
+    const a = (i / WALL_COUNT) * Math.PI * 2;
+
+    const wallBody = new CANNON.Body({
       type: CANNON.Body.STATIC,
-      shape: new CANNON.Box(new CANNON.Vec3(0.2, 2, 1))
+      shape: new CANNON.Box(
+        new CANNON.Vec3(
+          WALL_THICK / 2,
+          WALL_HEIGHT / 2,
+          wallWidth / 2
+        )
+      )
     });
-    wall.position.set(Math.cos(a) * BOWL_RADIUS, 2.2, Math.sin(a) * BOWL_RADIUS);
-    wall.quaternion.setFromEuler(THREE.MathUtils.degToRad(-10), a, 0);
-    world.addBody(wall);
+
+    wallBody.position.set(
+      Math.cos(a) * (BOWL_RADIUS - WALL_THICK / 2),
+      WALL_HEIGHT / 2,     // ← 高さに合わせる
+      Math.sin(a) * (BOWL_RADIUS - WALL_THICK / 2)
+    );
+
+    wallBody.quaternion.setFromEuler(0, a, 0);
+    world.addBody(wallBody);
   }
 
-  document.getElementById("rollBtn").onclick = roll;
+  rollBtn.onclick = roll;
 }
 
-/* ---------- コメント演出 ---------- */
-function showZawa() {
-  const layer = document.getElementById("comment-layer");
-  for (let i = 0; i < 8; i++) {
-    const c = document.createElement("div");
-    c.className = "comment";
-    c.textContent = "ざわ…　ざわ…";
-    c.style.top = Math.random() * 80 + "%";
-    c.style.animationDelay = (Math.random() * 1.5) + "s";
-    layer.appendChild(c);
-    setTimeout(() => c.remove(), 7000);
-  }
-}
-function showUnchi() {
-  const el = document.getElementById("unchi");
-  el.textContent = "お前の負けwwww";
-  el.style.animation = "none";
-  el.offsetHeight; // リフロー強制（再アニメ用）
-  el.style.animation = "unchiShow 3s ease forwards";
-}
-
-/* ---------- 判定 ---------- */
-function judge(vals, out) {
-  if (vals.join()==="1,1,1") return "ピンゾロ";
-  if (vals.join()==="4,5,6") return "シゴロ";
-  if (vals[0]===vals[1] && vals[1]===vals[2]) return "ゾロ目";
-  if (vals.join()==="1,2,3") return "ヒフミ";
-  if (vals[0]===vals[1] || vals[1]===vals[2]) {
-    const single = vals[0]===vals[1] ? vals[2] : vals[0];
-    return `通常目（${single}）`;
-  }
-  return "役なし";
-}
-
-const diceChar=["","⚀","⚁","⚂","⚃","⚄","⚅"];
-
-/* ---------- 振る ---------- */
 function roll() {
   if (isRolling) return;
   isRolling = true;
@@ -216,17 +172,16 @@ function roll() {
   rollBtn.classList.add("hidden");
   result.textContent = "振っています…";
 
-  dice.forEach(d => {
+  dice.forEach(d=>{
     scene.remove(d.mesh);
     world.removeBody(d.body);
   });
   dice = [];
 
-  for (let i = 0; i < 3; i++) {
-    dice.push(createDice());
-  }
+  for (let i = 0; i < 3; i++) dice.push(createDice());
 }
-function createDice() {
+
+function createDice(index) {
   const mesh = new THREE.Mesh(
     new THREE.BoxGeometry(1, 1, 1),
     diceMaterials()
@@ -235,58 +190,94 @@ function createDice() {
 
   const body = new CANNON.Body({
     mass: 1,
-    shape: new CANNON.Box(new CANNON.Vec3(0.5, 0.5, 0.5))
+    shape: new CANNON.Box(new CANNON.Vec3(0.5,0.5,0.5))
   });
 
   body.position.set(
-    (Math.random() - 0.5) * 2,
-    6,
-    (Math.random() - 0.5) * 2
+    (Math.random()-0.5)*2,
+    8,
+    (Math.random()-0.5)*2
   );
 
-  body.angularVelocity.set(
-    (Math.random() - 0.5) * 4,
-    (Math.random() - 0.5) * 4,
-    (Math.random() - 0.5) * 4
-  );
+  // 🔥 チートで面を固定
+  if(CHEAT_MODE === "hancho") {
+    const target = CHEAT_VALUES[index]; // 4,5,6
+    let euler;
+    if(target===4) euler = [0, -Math.PI/2, 0];
+    if(target===5) euler = [0, Math.PI/2, 0];
+    if(target===6) euler = [Math.PI, 0, 0];
+    body.quaternion.setFromEuler(...euler);
+    body.angularVelocity.set(0,0,0);
+  } else {
+    body.quaternion.setFromEuler(
+      Math.random()*Math.PI*2,
+      Math.random()*Math.PI*2,
+      Math.random()*Math.PI*2
+    );
+    body.angularVelocity.set(
+      (Math.random()-0.5)*6,
+      (Math.random()-0.5)*6,
+      (Math.random()-0.5)*6
+    );
+  }
 
   world.addBody(body);
-  return { mesh, body };
+  return {mesh, body};
 }
-function diceMaterials() {
-  const pip = (ctx, x, y, red=false) => {
-    ctx.fillStyle = red ? "#d00" : "#000";
-    ctx.beginPath();
-    ctx.arc(x, y, 10, 0, Math.PI * 2);
-    ctx.fill();
-  };
 
-  const draw = (n) => {
+
+function diceMaterials() {
+
+  const draw = (n, forceOne = false) => {
     const c = document.createElement("canvas");
     c.width = c.height = 128;
     const ctx = c.getContext("2d");
+
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, 128, 128);
 
-    if (n === 1) pip(ctx, 64, 64, true);
-    if (n === 2) { pip(ctx, 32, 32); pip(ctx, 96, 96); }
-    if (n === 3) { pip(ctx, 32, 32); pip(ctx, 64, 64); pip(ctx, 96, 96); }
-    if (n === 4) { pip(ctx, 32, 32); pip(ctx, 96, 32); pip(ctx, 32, 96); pip(ctx, 96, 96); }
-    if (n === 5) { pip(ctx, 32, 32); pip(ctx, 96, 32); pip(ctx, 64, 64); pip(ctx, 32, 96); pip(ctx, 96, 96); }
-    if (n === 6) { pip(ctx, 32, 32); pip(ctx, 32, 64); pip(ctx, 32, 96); pip(ctx, 96, 32); pip(ctx, 96, 64); pip(ctx, 96, 96); }
+    const pip = (x, y, red=false) => {
+      ctx.fillStyle = red ? "#d00" : "#000";
+      ctx.beginPath();
+      ctx.arc(x, y, 10, 0, Math.PI * 2);
+      ctx.fill();
+    };
+
+    // 🔥 チート中：全部「1」
+    if (forceOne) {
+      pip(64, 64, true);
+    } else {
+      if (n === 1) pip(64, 64, true);
+      if (n === 2) { pip(32,32); pip(96,96); }
+      if (n === 3) { pip(32,32); pip(64,64); pip(96,96); }
+      if (n === 4) { pip(32,32); pip(96,32); pip(32,96); pip(96,96); }
+      if (n === 5) { pip(32,32); pip(96,32); pip(64,64); pip(32,96); pip(96,96); }
+      if (n === 6) { pip(32,32); pip(32,64); pip(32,96); pip(96,32); pip(96,64); pip(96,96); }
+    }
 
     return new THREE.MeshStandardMaterial({
       map: new THREE.CanvasTexture(c)
     });
   };
 
-  // ★ 必ず6個
-  return [draw(3), draw(4), draw(1), draw(6), draw(2), draw(5)];
+  const cheat = (CHEAT_MODE === "one_only");
+
+  // BoxGeometry の面順
+  return [
+    draw(3, cheat),
+    draw(4, cheat),
+    draw(1, cheat),
+    draw(6, cheat),
+    draw(2, cheat),
+    draw(5, cheat)
+  ];
 }
 
 
-/* ---------- 上面 ---------- */
-function topFace(body) {
+function topFace(body, index) {
+  if (CHEAT_MODE === "one_only") return 1;
+  if (CHEAT_MODE === "hancho") return CHEAT_VALUES[index]; // index で対応
+
   const up = new CANNON.Vec3(0,1,0);
   const faces = [
     {v:new CANNON.Vec3(0,1,0),n:1},
@@ -304,41 +295,69 @@ function topFace(body) {
   return val;
 }
 
-/* ---------- ループ ---------- */
+
 function animate() {
   requestAnimationFrame(animate);
   world.step(1/60);
 
   if (dice.length) {
     let stopped=true;
-    let out=false;
 
     dice.forEach(d=>{
       d.mesh.position.copy(d.body.position);
       d.mesh.quaternion.copy(d.body.quaternion);
       if (d.body.velocity.length()>0.1) stopped=false;
-      if (Math.hypot(d.body.position.x,d.body.position.z)>BOWL_RADIUS+0.5) out=true;
     });
 
     if (stopped && isRolling) {
-      const vals=dice.map(d=>topFace(d.body)).sort((a,b)=>a-b);
-      const res=judge(vals,out);
+      const vals = dice.map((d,i)=>topFace(d.body,i)).sort((a,b)=>a-b);
+      const res=judge(vals);
       const chars=vals.map(v=>diceChar[v]).join(" ");
 
-      document.getElementById("result").innerHTML=
+      result.innerHTML =
         `<div class="dice">${chars}</div>
          <div class="judge">${res}</div>`;
 
       if (res==="ピンゾロ" || res==="シゴロ") showZawa();
       if (res==="ヒフミ") showUnchi();
 
-      document.getElementById("rollBtn").classList.remove("hidden");
+      rollBtn.classList.remove("hidden");
       isRolling=false;
     }
   }
 
   renderer.render(scene,camera);
 }
+
+function judge(vals) {
+  if (vals.join()==="1,1,1") return "ピンゾロ";
+  if (vals.join()==="4,5,6") return "シゴロ";
+  if (vals[0]===vals[2]) return "ゾロ目";
+  if (vals.join()==="1,2,3") return "ヒフミ";
+  if (vals[0]===vals[1] || vals[1]===vals[2]) {
+    const s = vals[0]===vals[1] ? vals[2] : vals[0];
+    return `通常目（${s}）`;
+  }
+  return "役なし";
+}
+
+const diceChar=["","⚀","⚁","⚂","⚃","⚄","⚅"];
+
+function showZawa() {
+  const layer = document.getElementById("comment-layer");
+  for (let i = 0; i < 8; i++) {
+    const c = document.createElement("div");
+    c.className = "comment";
+    c.textContent = "ざわ…　ざわ…";
+    c.style.top = (Math.random() * 80 + 10) + "%"; // 10~90% に変更
+    c.style.animationDelay = (Math.random() * 1.5) + "s";
+    c.style.left = "100%"; // 明示的に右端から
+    layer.appendChild(c);
+    setTimeout(() => c.remove(), 7000);
+  }
+}
+
+
 </script>
 </body>
 </html>
